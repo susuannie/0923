@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Taiwan Weather GIS — AIoT L3 CWA HW1</title>
+  <meta name="description" content="台灣即時天氣 GIS 地圖，資料來源：中央氣象署 CWA Open Data。" />
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Google Fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+
+  <style>
+    /* ── Reset & Base ─────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0a0e1a;
+      --surface:   rgba(15, 20, 40, 0.85);
+      --border:    rgba(100, 140, 255, 0.18);
+      --accent:    #4f8bff;
+      --accent2:   #38d9a9;
+      --warn:      #f59e0b;
+      --text:      #e2e8f0;
+      --muted:     #7a8ba8;
+      --radius:    14px;
+      --shadow:    0 8px 32px rgba(0,0,0,0.5);
+    }
+
+    html, body { height: 100%; font-family: 'Outfit', sans-serif; background: var(--bg); color: var(--text); overflow: hidden; }
+
+    /* ── Layout ───────────────────────────────────────── */
+    .app { display: grid; grid-template-rows: 56px 1fr; grid-template-columns: 320px 1fr; height: 100vh; }
+
+    /* ── Header ───────────────────────────────────────── */
+    header {
+      grid-column: 1 / -1;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 20px;
+      background: rgba(10, 14, 26, 0.95);
+      border-bottom: 1px solid var(--border);
+      backdrop-filter: blur(16px);
+      z-index: 1000;
+    }
+    .logo { display: flex; align-items: center; gap: 10px; font-size: 1.1rem; font-weight: 700; letter-spacing: -0.3px; }
+    .logo-icon { font-size: 1.5rem; }
+    .logo-sub { font-size: 0.7rem; color: var(--muted); font-weight: 400; letter-spacing: 0.5px; }
+    .header-right { display: flex; align-items: center; gap: 14px; }
+    .update-time { font-size: 0.75rem; color: var(--muted); }
+    #refresh-btn {
+      display: flex; align-items: center; gap: 6px;
+      padding: 7px 14px; border-radius: 8px; border: 1px solid var(--border);
+      background: rgba(79, 139, 255, 0.12); color: var(--accent);
+      font-family: 'Outfit', sans-serif; font-size: 0.82rem; font-weight: 500;
+      cursor: pointer; transition: all 0.2s;
+    }
+    #refresh-btn:hover { background: rgba(79, 139, 255, 0.25); border-color: var(--accent); }
+    #refresh-btn.spinning svg { animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Sidebar ──────────────────────────────────────── */
+    #sidebar {
+      grid-row: 2;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      backdrop-filter: blur(20px);
+      display: flex; flex-direction: column;
+      overflow: hidden;
+      z-index: 500;
+    }
+
+    .sidebar-header {
+      padding: 16px 16px 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    .sidebar-title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 1.2px; color: var(--muted); margin-bottom: 10px; }
+
+    /* Search */
+    .search-box {
+      position: relative;
+    }
+    .search-box input {
+      width: 100%; padding: 8px 12px 8px 32px;
+      background: rgba(255,255,255,0.05); border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text); font-family: 'Outfit', sans-serif; font-size: 0.83rem;
+      outline: none; transition: border-color 0.2s;
+    }
+    .search-box input:focus { border-color: var(--accent); }
+    .search-icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 0.85rem; pointer-events: none; }
+
+    /* County list */
+    #county-list { flex: 1; overflow-y: auto; padding: 8px; }
+    #county-list::-webkit-scrollbar { width: 4px; }
+    #county-list::-webkit-scrollbar-track { background: transparent; }
+    #county-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .county-card {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 12px; border-radius: 10px; margin-bottom: 4px;
+      cursor: pointer; transition: all 0.18s; border: 1px solid transparent;
+    }
+    .county-card:hover { background: rgba(79, 139, 255, 0.1); border-color: rgba(79, 139, 255, 0.2); }
+    .county-card.active { background: rgba(79, 139, 255, 0.18); border-color: rgba(79, 139, 255, 0.4); }
+    .county-emoji { font-size: 1.5rem; flex-shrink: 0; }
+    .county-info { flex: 1; min-width: 0; }
+    .county-name { font-size: 0.9rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .county-weather { font-size: 0.75rem; color: var(--muted); margin-top: 1px; }
+    .county-temps { text-align: right; flex-shrink: 0; }
+    .temp-max { font-size: 1rem; font-weight: 700; }
+    .temp-min { font-size: 0.72rem; color: var(--muted); }
+
+    /* ── Map ──────────────────────────────────────────── */
+    #map {
+      grid-row: 2;
+      z-index: 1;
+    }
+    .leaflet-tile-pane { filter: brightness(0.75) saturate(0.7) hue-rotate(190deg); }
+
+    /* ── Weather Panel (right) ────────────────────────── */
+    #weather-panel {
+      position: absolute; top: 56px; right: 0;
+      width: 300px; height: calc(100vh - 56px);
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      backdrop-filter: blur(20px);
+      z-index: 500;
+      display: flex; flex-direction: column;
+      transform: translateX(100%);
+      transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    #weather-panel.open { transform: translateX(0); }
+
+    .panel-close {
+      position: absolute; top: 12px; right: 12px;
+      width: 28px; height: 28px; border-radius: 50%;
+      background: rgba(255,255,255,0.08); border: none; color: var(--muted);
+      font-size: 1rem; cursor: pointer; display: flex; align-items: center; justify-content: center;
+      transition: background 0.2s;
+    }
+    .panel-close:hover { background: rgba(255,255,255,0.15); color: var(--text); }
+
+    .panel-hero {
+      padding: 24px 20px 16px;
+      background: linear-gradient(135deg, rgba(79,139,255,0.15), rgba(56,217,169,0.08));
+      border-bottom: 1px solid var(--border);
+    }
+    .panel-location { font-size: 1.4rem; font-weight: 700; }
+    .panel-big-weather { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+    .panel-emoji { font-size: 2.8rem; }
+    .panel-temp-block {}
+    .panel-temp-range { font-size: 1.1rem; font-weight: 600; }
+    .panel-weather-desc { font-size: 0.85rem; color: var(--muted); }
+    .panel-pop { display: inline-flex; align-items: center; gap: 4px; margin-top: 6px; padding: 3px 8px; border-radius: 20px; background: rgba(56,217,169,0.15); color: var(--accent2); font-size: 0.78rem; font-weight: 500; }
+
+    .panel-forecasts { flex: 1; overflow-y: auto; padding: 14px; }
+    .forecast-slot {
+      display: flex; align-items: center; gap: 10px;
+      padding: 12px; border-radius: 10px; margin-bottom: 8px;
+      background: rgba(255,255,255,0.03); border: 1px solid var(--border);
+      transition: background 0.18s;
+    }
+    .forecast-slot:hover { background: rgba(255,255,255,0.06); }
+    .slot-time { font-size: 0.72rem; color: var(--muted); min-width: 80px; line-height: 1.4; }
+    .slot-emoji { font-size: 1.3rem; }
+    .slot-info { flex: 1; }
+    .slot-weather { font-size: 0.82rem; font-weight: 500; }
+    .slot-temps { font-size: 0.75rem; color: var(--muted); }
+    .slot-pop { font-size: 0.72rem; color: var(--accent2); }
+
+    /* ── Legend ───────────────────────────────────────── */
+    #legend {
+      position: absolute; bottom: 28px; left: 336px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+      backdrop-filter: blur(16px);
+      z-index: 500;
+    }
+    .legend-title { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 8px; }
+    .legend-scale { display: flex; align-items: center; gap: 6px; }
+    .legend-bar {
+      width: 120px; height: 8px; border-radius: 4px;
+      background: linear-gradient(to right, #4fc3f7, #81c784, #ffb74d, #ef5350);
+    }
+    .legend-labels { display: flex; justify-content: space-between; font-size: 0.68rem; color: var(--muted); margin-top: 3px; }
+
+    /* ── Stats Bar ────────────────────────────────────── */
+    #stats-bar {
+      position: absolute; bottom: 28px; right: 16px;
+      display: flex; gap: 8px;
+      z-index: 500;
+    }
+    .stat-chip {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 12px;
+      backdrop-filter: blur(16px);
+      font-size: 0.75rem;
+    }
+    .stat-label { color: var(--muted); }
+    .stat-value { font-weight: 600; color: var(--text); }
+
+    /* ── Loading ──────────────────────────────────────── */
+    #loading {
+      position: absolute; inset: 0; z-index: 9999;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: var(--bg);
+      gap: 16px;
+      transition: opacity 0.5s;
+    }
+    #loading.hidden { opacity: 0; pointer-events: none; }
+    .loader-ring {
+      width: 48px; height: 48px; border-radius: 50%;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      animation: spin 0.9s linear infinite;
+    }
+    .loader-text { font-size: 0.9rem; color: var(--muted); }
+
+    /* ── Custom Leaflet popup ─────────────────────────── */
+    .leaflet-popup-content-wrapper {
+      background: rgba(10, 14, 26, 0.92) !important;
+      border: 1px solid var(--border) !important;
+      border-radius: 10px !important;
+      backdrop-filter: blur(12px);
+      color: var(--text) !important;
+      box-shadow: var(--shadow) !important;
+      font-family: 'Outfit', sans-serif !important;
+    }
+    .leaflet-popup-tip { background: rgba(10, 14, 26, 0.92) !important; }
+    .leaflet-popup-close-button { color: var(--muted) !important; }
+    .popup-name { font-size: 1rem; font-weight: 700; margin-bottom: 4px; }
+    .popup-row { display: flex; align-items: center; gap: 6px; font-size: 0.82rem; margin: 3px 0; }
+    .popup-label { color: var(--muted); }
+    .popup-val { font-weight: 500; }
+    .popup-pop { color: var(--accent2); }
+  </style>
+</head>
+<body>
+
+<!-- Loading Overlay -->
+<div id="loading">
+  <div class="loader-ring"></div>
+  <div class="loader-text">載入台灣天氣資料中...</div>
+</div>
+
+<!-- App Layout -->
+<div class="app">
+  <!-- Header -->
+  <header>
+    <div class="logo">
+      <span class="logo-icon">🌤</span>
+      <div>
+        <div>Taiwan Weather GIS</div>
+        <div class="logo-sub">AIoT L3 · CWA Open Data · F-C0032-001</div>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="update-time" id="update-time">--</div>
+      <button id="refresh-btn">
+        <svg id="refresh-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <path d="M23 4v6h-6M1 20v-6h6"/>
+          <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+        </svg>
+        Refresh
+      </button>
+    </div>
+  </header>
+
+  <!-- Sidebar -->
+  <aside id="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-title">22 縣市天氣預報</div>
+      <div class="search-box">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="search-input" placeholder="搜尋縣市..." />
+      </div>
+    </div>
+    <div id="county-list"></div>
+  </aside>
+
+  <!-- Map -->
+  <div id="map"></div>
+</div>
+
+<!-- Weather Detail Panel -->
+<div id="weather-panel">
+  <button class="panel-close" id="panel-close">✕</button>
+  <div class="panel-hero" id="panel-hero"></div>
+  <div class="panel-forecasts" id="panel-forecasts"></div>
+</div>
+
+<!-- Legend -->
+<div id="legend">
+  <div class="legend-title">最高溫 (°C)</div>
+  <div class="legend-scale">
+    <div>
+      <div class="legend-bar"></div>
+      <div class="legend-labels"><span>&lt;20</span><span>25</span><span>30</span><span>&gt;35</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- Stats -->
+<div id="stats-bar">
+  <div class="stat-chip"><span class="stat-label">縣市 </span><span class="stat-value" id="stat-counties">--</span></div>
+  <div class="stat-chip"><span class="stat-label">最高溫 </span><span class="stat-value" id="stat-hottest">--</span></div>
+  <div class="stat-chip"><span class="stat-label">最低溫 </span><span class="stat-value" id="stat-coldest">--</span></div>
+</div>
+
+<script>
+// ── Constants ────────────────────────────────────────────
+const COORDS = {
+  "臺北市":[25.033,121.565], "新北市":[25.012,121.465], "桃園市":[24.994,121.301],
+  "臺中市":[24.148,120.674], "臺南市":[23.000,120.227], "高雄市":[22.627,120.301],
+  "基隆市":[25.128,121.739], "新竹市":[24.814,120.967], "嘉義市":[23.480,120.449],
+  "新竹縣":[24.704,121.125], "苗栗縣":[24.560,120.821], "彰化縣":[24.052,120.516],
+  "南投縣":[23.961,120.972], "雲林縣":[23.709,120.431], "嘉義縣":[23.452,120.255],
+  "屏東縣":[22.552,120.549], "宜蘭縣":[24.702,121.738], "花蓮縣":[23.987,121.601],
+  "臺東縣":[22.797,121.072], "澎湖縣":[23.571,119.579], "金門縣":[24.449,118.377],
+  "連江縣":[26.161,119.952],
+};
+
+// ── Helpers ──────────────────────────────────────────────
+function weatherEmoji(w) {
+  if (!w) return '🌤';
+  if (w.includes('雷')) return '⛈';
+  if (w.includes('暴雨') || w.includes('大雨')) return '🌧';
+  if (w.includes('雨')) return '🌦';
+  if (w.includes('陰')) return '☁';
+  if (w.includes('多雲') && w.includes('晴')) return '⛅';
+  if (w.includes('多雲')) return '🌥';
+  if (w.includes('晴')) return '☀';
+  if (w.includes('霧')) return '🌫';
+  return '🌤';
+}
+
+function tempColor(t) {
+  if (t == null) return '#7a8ba8';
+  if (t >= 35) return '#ef5350';
+  if (t >= 30) return '#ff7043';
+  if (t >= 27) return '#ffb74d';
+  if (t >= 23) return '#81c784';
+  if (t >= 18) return '#4fc3f7';
+  return '#5c6bc0';
+}
+
+function fmtTime(s) {
+  if (!s) return '--';
+  return s.replace('T',' ').slice(5,16);
+}
+
+// ── State ────────────────────────────────────────────────
+let weatherData = {};   // { locationName: { ...data } }
+let geoLayer    = null;
+let markers     = {};
+let activeCounty = null;
+
+// ── Map Init ─────────────────────────────────────────────
+const map = L.map('map', {
+  center: [23.6, 120.9],
+  zoom: 8,
+  zoomControl: false,
+  attributionControl: true,
+});
+L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  maxZoom: 18,
+}).addTo(map);
+
+// ── Fetch Weather Data ───────────────────────────────────
+async function loadWeather() {
+  const res  = await fetch('/api/weather');
+  const list = await res.json();
+  weatherData = {};
+  list.forEach(d => { weatherData[d.location_name] = d; });
+  return weatherData;
+}
+
+// ── GeoJSON Layer ────────────────────────────────────────
+async function loadGeoJSON() {
+  const res = await fetch('/static/taiwan.geojson');
+  return await res.json();
+}
+
+function buildGeoLayer(geo) {
+  if (geoLayer) map.removeLayer(geoLayer);
+  geoLayer = L.geoJSON(geo, {
+    style: feature => {
+      const name = feature.properties.county;
+      const d    = weatherData[name];
+      const t    = d ? d.forecasts[0]?.max_temp : null;
+      return {
+        fillColor:   tempColor(t),
+        fillOpacity: 0.55,
+        color:       'rgba(100,140,255,0.4)',
+        weight:      1.5,
+      };
+    },
+    onEachFeature: (feature, layer) => {
+      const name = feature.properties.county;
+      const d    = weatherData[name];
+      if (!d) return;
+      const f0 = d.forecasts[0] || {};
+      layer.bindPopup(`
+        <div class="popup-name">${weatherEmoji(f0.weather)} ${name}</div>
+        <div class="popup-row"><span class="popup-label">天氣</span><span class="popup-val">${f0.weather || '--'}</span></div>
+        <div class="popup-row"><span class="popup-label">溫度</span><span class="popup-val">${f0.min_temp}°C ~ ${f0.max_temp}°C</span></div>
+        <div class="popup-row"><span class="popup-label">降雨機率</span><span class="popup-pop">${f0.pop != null ? f0.pop + '%' : '--'}</span></div>
+      `, { className: '' });
+
+      layer.on({
+        mouseover: e => { e.target.setStyle({ fillOpacity: 0.8, weight: 2.5, color: '#4f8bff' }); },
+        mouseout:  e => { geoLayer.resetStyle(e.target); },
+        click:     () => { selectCounty(name); },
+      });
+    }
+  }).addTo(map);
+}
+
+// ── Markers ──────────────────────────────────────────────
+function buildMarkers() {
+  Object.values(markers).forEach(m => map.removeLayer(m));
+  markers = {};
+
+  Object.entries(weatherData).forEach(([name, d]) => {
+    const coords = COORDS[name];
+    if (!coords) return;
+    const f0 = d.forecasts[0] || {};
+    const emoji = weatherEmoji(f0.weather);
+    const icon = L.divIcon({
+      className: '',
+      html: `<div style="
+        background:rgba(10,14,26,0.82);border:1px solid rgba(79,139,255,0.4);
+        border-radius:8px;padding:3px 7px;font-size:0.75rem;white-space:nowrap;
+        font-family:'Outfit',sans-serif;color:#e2e8f0;backdrop-filter:blur(8px);
+        box-shadow:0 2px 8px rgba(0,0,0,0.4);cursor:pointer;
+        display:flex;align-items:center;gap:4px;
+      ">
+        ${emoji}
+        <span style="font-weight:600">${f0.max_temp != null ? f0.max_temp+'°' : '--'}</span>
+      </div>`,
+      iconAnchor: [0, 0],
+    });
+    const m = L.marker(coords, { icon }).addTo(map);
+    m.on('click', () => selectCounty(name));
+    markers[name] = m;
+  });
+}
+
+// ── Sidebar ──────────────────────────────────────────────
+function buildSidebar(filter = '') {
+  const list = document.getElementById('county-list');
+  list.innerHTML = '';
+
+  const sorted = Object.values(weatherData).sort((a, b) => {
+    const ta = a.forecasts[0]?.max_temp ?? 0;
+    const tb = b.forecasts[0]?.max_temp ?? 0;
+    return tb - ta;
+  });
+
+  sorted.filter(d => d.location_name.includes(filter)).forEach(d => {
+    const f0    = d.forecasts[0] || {};
+    const emoji = weatherEmoji(f0.weather);
+    const card  = document.createElement('div');
+    card.className = 'county-card' + (activeCounty === d.location_name ? ' active' : '');
+    card.dataset.name = d.location_name;
+    card.innerHTML = `
+      <div class="county-emoji">${emoji}</div>
+      <div class="county-info">
+        <div class="county-name">${d.location_name}</div>
+        <div class="county-weather">${f0.weather || '--'}</div>
+      </div>
+      <div class="county-temps">
+        <div class="temp-max" style="color:${tempColor(f0.max_temp)}">${f0.max_temp != null ? f0.max_temp+'°' : '--'}</div>
+        <div class="temp-min">${f0.min_temp != null ? f0.min_temp+'°' : '--'}</div>
+      </div>
+    `;
+    card.addEventListener('click', () => selectCounty(d.location_name));
+    list.appendChild(card);
+  });
+}
+
+// ── Stats ─────────────────────────────────────────────────
+function updateStats() {
+  const all = Object.values(weatherData);
+  document.getElementById('stat-counties').textContent = all.length;
+  const maxTemps = all.map(d => d.forecasts[0]?.max_temp).filter(t => t != null);
+  const minTemps = all.map(d => d.forecasts[0]?.min_temp).filter(t => t != null);
+  document.getElementById('stat-hottest').textContent = maxTemps.length ? Math.max(...maxTemps) + '°C' : '--';
+  document.getElementById('stat-coldest').textContent = minTemps.length ? Math.min(...minTemps) + '°C' : '--';
+
+  const times = all.map(d => d.fetched_at).filter(Boolean);
+  if (times.length) {
+    document.getElementById('update-time').textContent = '更新：' + times[0].slice(5, 16);
+  }
+}
+
+// ── Select County ─────────────────────────────────────────
+function selectCounty(name) {
+  activeCounty = name;
+  buildSidebar(document.getElementById('search-input').value);
+  showPanel(name);
+
+  const coords = COORDS[name];
+  if (coords) map.flyTo(coords, 10, { duration: 0.8 });
+}
+
+// ── Weather Panel ─────────────────────────────────────────
+function showPanel(name) {
+  const d  = weatherData[name];
+  if (!d) return;
+  const f0 = d.forecasts[0] || {};
+  const emoji = weatherEmoji(f0.weather);
+
+  document.getElementById('panel-hero').innerHTML = `
+    <div class="panel-location">${name}</div>
+    <div class="panel-big-weather">
+      <div class="panel-emoji">${emoji}</div>
+      <div class="panel-temp-block">
+        <div class="panel-temp-range" style="color:${tempColor(f0.max_temp)}">${f0.min_temp ?? '--'}° / ${f0.max_temp ?? '--'}°C</div>
+        <div class="panel-weather-desc">${f0.weather || '--'}</div>
+        ${f0.pop != null ? `<div class="panel-pop">💧 降雨機率 ${f0.pop}%</div>` : ''}
+      </div>
+    </div>
+  `;
+
+  const fc = document.getElementById('panel-forecasts');
+  fc.innerHTML = '<div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;padding:0 0 8px;">36小時預報</div>';
+  d.forecasts.forEach(f => {
+    const div = document.createElement('div');
+    div.className = 'forecast-slot';
+    div.innerHTML = `
+      <div class="slot-time">${fmtTime(f.start)}<br>～ ${fmtTime(f.end)}</div>
+      <div class="slot-emoji">${weatherEmoji(f.weather)}</div>
+      <div class="slot-info">
+        <div class="slot-weather">${f.weather || '--'}</div>
+        <div class="slot-temps">${f.min_temp ?? '--'}°C ～ ${f.max_temp ?? '--'}°C</div>
+        ${f.pop != null ? `<div class="slot-pop">💧 ${f.pop}%</div>` : ''}
+      </div>
+    `;
+    fc.appendChild(div);
+  });
+
+  document.getElementById('weather-panel').classList.add('open');
+}
+
+// ── Close Panel ───────────────────────────────────────────
+document.getElementById('panel-close').addEventListener('click', () => {
+  document.getElementById('weather-panel').classList.remove('open');
+  activeCounty = null;
+  buildSidebar(document.getElementById('search-input').value);
+});
+
+// ── Search ────────────────────────────────────────────────
+document.getElementById('search-input').addEventListener('input', e => {
+  buildSidebar(e.target.value.trim());
+});
+
+// ── Refresh ───────────────────────────────────────────────
+document.getElementById('refresh-btn').addEventListener('click', async () => {
+  const btn  = document.getElementById('refresh-btn');
+  const icon = document.getElementById('refresh-icon');
+  btn.disabled = true;
+  icon.style.animation = 'spin 1s linear infinite';
+
+  try {
+    const r = await fetch('/api/weather/refresh', { method: 'POST' });
+    const j = await r.json();
+    if (j.status === 'ok') {
+      await init(false);
+    } else {
+      alert('Refresh error: ' + j.message);
+    }
+  } finally {
+    btn.disabled = false;
+    icon.style.animation = '';
+  }
+});
+
+// ── Main Init ─────────────────────────────────────────────
+async function init(showLoading = true) {
+  try {
+    const [_, geo] = await Promise.all([loadWeather(), loadGeoJSON()]);
+    buildGeoLayer(geo);
+    buildMarkers();
+    buildSidebar();
+    updateStats();
+  } catch (e) {
+    console.error(e);
+    alert('Error loading data: ' + e.message);
+  } finally {
+    if (showLoading) {
+      document.getElementById('loading').classList.add('hidden');
+    }
+  }
+}
+
+init();
+</script>
+</body>
+</html>
