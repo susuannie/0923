@@ -8,6 +8,14 @@
 [![Leaflet](https://img.shields.io/badge/Leaflet-1.9-green?logo=leaflet)](https://leafletjs.com/)
 [![CWA](https://img.shields.io/badge/Data-CWA%20F--C0032--001-orange)](https://opendata.cwa.gov.tw/)
 
+## Live Demo
+
+🌐 網站連結：<https://taiwan-weather-map.vercel.app/>
+
+<p align="center">
+  <img src="static/preview.png" alt="Taiwan Weather GIS Preview" width="1000" />
+</p>
+
 ---
 
 ## 功能特色
