@@ -7,11 +7,14 @@ import os
 import sqlite3
 from flask import Flask, jsonify, render_template, send_from_directory
 from dotenv import load_dotenv
+import requests
 
 load_dotenv()
 
 app = Flask(__name__)
 DB_PATH = "weather.db"
+CWA_API_KEY = os.getenv("CWA_API_KEY")
+STATION_API_URL = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/O-A0001-001"
 
 
 def query_db(sql: str, params=()) -> list[dict]:
@@ -74,6 +77,80 @@ def api_refresh():
         return jsonify({"status": "ok", "message": "Weather data refreshed"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+def _safe_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_wgs84_coordinates(station):
+    geo = station.get("GeoInfo", {})
+    for coord in geo.get("Coordinates", []):
+        if coord.get("CoordinateName") == "WGS84":
+            lat = _safe_float(coord.get("StationLatitude"))
+            lon = _safe_float(coord.get("StationLongitude"))
+            if lat is not None and lon is not None:
+                return lat, lon
+    return None, None
+
+
+def normalize_station(station):
+    geo = station.get("GeoInfo", {})
+    lat, lon = _extract_wgs84_coordinates(station)
+    weather_elem = station.get("WeatherElement", {})
+    now = weather_elem.get("Now", {})
+
+    return {
+        "station_name": station.get("StationName"),
+        "station_id": station.get("StationId"),
+        "county": geo.get("CountyName"),
+        "town": geo.get("TownName"),
+        "lat": lat,
+        "lon": lon,
+        "weather": weather_elem.get("Weather"),
+        "temperature": _safe_float(weather_elem.get("AirTemperature")),
+        "humidity": _safe_int(weather_elem.get("RelativeHumidity")),
+        "wind_speed": _safe_float(weather_elem.get("WindSpeed")),
+        "wind_direction": _safe_float(weather_elem.get("WindDirection")),
+        "rain_1h": _safe_float(now.get("Precipitation")),
+        "obs_time": station.get("ObsTime", {}).get("DateTime"),
+    }
+
+
+@app.route("/api/stations")
+def api_stations():
+    """回傳所有自動氣象站即時觀測資料，作為地圖疊層，不影響既有縣市預報功能。"""
+    if not CWA_API_KEY:
+        return jsonify({"status": "error", "message": "CWA_API_KEY not configured"}), 500
+
+    try:
+        resp = requests.get(
+            STATION_API_URL,
+            params={"Authorization": CWA_API_KEY, "format": "JSON"},
+            timeout=20,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        stations = data.get("records", {}).get("Station", [])
+
+        normalized = []
+        for station in stations:
+            item = normalize_station(station)
+            if item["lat"] is not None and item["lon"] is not None:
+                normalized.append(item)
+        return jsonify(normalized)
+    except Exception as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 500
 
 
 @app.route("/static/<path:filename>")

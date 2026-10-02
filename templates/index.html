@@ -359,6 +359,7 @@ function fmtTime(s) {
 let weatherData = {};   // { locationName: { ...data } }
 let geoLayer    = null;
 let markers     = {};
+let stationLayer = null;
 let activeCounty = null;
 
 // ── Map Init ─────────────────────────────────────────────
@@ -387,6 +388,11 @@ async function loadWeather() {
 // ── GeoJSON Layer ────────────────────────────────────────
 async function loadGeoJSON() {
   const res = await fetch('/static/taiwan.geojson');
+  return await res.json();
+}
+
+async function loadStations() {
+  const res = await fetch('/api/stations');
   return await res.json();
 }
 
@@ -452,6 +458,40 @@ function buildMarkers() {
     const m = L.marker(coords, { icon }).addTo(map);
     m.on('click', () => selectCounty(name));
     markers[name] = m;
+  });
+}
+
+function buildStationMarkers(stations = []) {
+  if (stationLayer) {
+    map.removeLayer(stationLayer);
+  }
+
+  stationLayer = L.layerGroup().addTo(map);
+
+  stations.forEach(station => {
+    const lat = Number(station.lat);
+    const lon = Number(station.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+
+    const temp = station.temperature ?? 25;
+    const color = tempColor(temp);
+    const circle = L.circleMarker([lat, lon], {
+      radius: 4,
+      color,
+      fillColor: color,
+      fillOpacity: 0.85,
+      weight: 1,
+    }).addTo(stationLayer);
+
+    const rainText = station.rain_1h != null ? `${station.rain_1h.toFixed(1)} mm` : '--';
+    const tempText = station.temperature != null ? `${station.temperature.toFixed(1)}°C` : '--';
+    circle.bindPopup(`
+      <div class="popup-name">📍 ${station.station_name || '觀測站'}</div>
+      <div class="popup-row"><span class="popup-label">位置</span><span class="popup-val">${station.county || '--'} / ${station.town || '--'}</span></div>
+      <div class="popup-row"><span class="popup-label">溫度</span><span class="popup-val">${tempText}</span></div>
+      <div class="popup-row"><span class="popup-label">雨量</span><span class="popup-pop">${rainText}</span></div>
+      <div class="popup-row"><span class="popup-label">濕度</span><span class="popup-val">${station.humidity != null ? station.humidity + '%' : '--'}</span></div>
+    `);
   });
 }
 
@@ -588,9 +628,10 @@ document.getElementById('refresh-btn').addEventListener('click', async () => {
 // ── Main Init ─────────────────────────────────────────────
 async function init(showLoading = true) {
   try {
-    const [_, geo] = await Promise.all([loadWeather(), loadGeoJSON()]);
+    const [_, geo, stations] = await Promise.all([loadWeather(), loadGeoJSON(), loadStations()]);
     buildGeoLayer(geo);
     buildMarkers();
+    buildStationMarkers(stations);
     buildSidebar();
     updateStats();
   } catch (e) {
