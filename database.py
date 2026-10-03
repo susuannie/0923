@@ -14,14 +14,44 @@ import requests
 from datetime import datetime
 from dotenv import load_dotenv
 
+try:
+    import psycopg
+except ImportError:  # pragma: no cover
+    psycopg = None
+
 # ── 載入 .env ─────────────────────────────────────────────
 load_dotenv()
 CWA_API_KEY = os.getenv("CWA_API_KEY")
 if not CWA_API_KEY:
     raise RuntimeError("[ERROR] CWA_API_KEY 未設定")
 
-DB_PATH   = "weather.db"
-BASE_URL  = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-C0032-001"
+
+def resolve_db_path() -> str:
+    db_path = os.getenv("DB_PATH")
+    if db_path:
+        return db_path
+    if os.getenv("VERCEL"):
+        return "/tmp/weather.db"
+    return "weather.db"
+
+
+DB_PATH = resolve_db_path()
+DATABASE_URL = os.getenv("DATABASE_URL")
+DB_BACKEND = "postgres" if DATABASE_URL and psycopg is not None else "sqlite"
+BASE_URL = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-C0032-001"
+
+
+def ensure_db_dir(db_path: str) -> str:
+    directory = os.path.dirname(db_path)
+    if directory and directory not in (".", ""):
+        os.makedirs(directory, exist_ok=True)
+    return db_path
+
+
+def get_db_connection():
+    if DB_BACKEND == "postgres":
+        return psycopg.connect(DATABASE_URL)
+    return sqlite3.connect(ensure_db_dir(DB_PATH))
 
 # ═══════════════════════════════════════════════════════════
 # 1. SCHEMA
@@ -32,6 +62,12 @@ CREATE TABLE IF NOT EXISTS locations (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     location_name TEXT    NOT NULL UNIQUE,
     created_at    TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+);
+""" if DB_BACKEND == "sqlite" else """
+CREATE TABLE IF NOT EXISTS locations (
+    id            SERIAL PRIMARY KEY,
+    location_name TEXT    NOT NULL UNIQUE,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 """
 
@@ -46,9 +82,21 @@ CREATE TABLE IF NOT EXISTS forecasts (
     max_temp       INTEGER,
     pop            INTEGER,
     fetched_at     TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
-    -- Duplicate strategy: 同地區同時段只保留最新一筆
     UNIQUE(location_name, forecast_start, forecast_end)
         ON CONFLICT REPLACE
+);
+""" if DB_BACKEND == "sqlite" else """
+CREATE TABLE IF NOT EXISTS forecasts (
+    id             SERIAL PRIMARY KEY,
+    location_name  TEXT    NOT NULL,
+    forecast_start TEXT    NOT NULL,
+    forecast_end   TEXT    NOT NULL,
+    weather        TEXT,
+    min_temp       INTEGER,
+    max_temp       INTEGER,
+    pop            INTEGER,
+    fetched_at     TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(location_name, forecast_start, forecast_end)
 );
 """
 
@@ -58,14 +106,19 @@ CREATE INDEX IF NOT EXISTS idx_forecasts_location
 """
 
 
-def init_db(conn: sqlite3.Connection):
+def init_db(conn):
     """建立 schema"""
     cur = conn.cursor()
-    cur.executescript(
-        CREATE_LOCATIONS_TABLE +
-        CREATE_FORECASTS_TABLE +
-        CREATE_IDX
-    )
+    if DB_BACKEND == "sqlite":
+        cur.executescript(
+            CREATE_LOCATIONS_TABLE +
+            CREATE_FORECASTS_TABLE +
+            CREATE_IDX
+        )
+    else:
+        cur.execute(CREATE_LOCATIONS_TABLE)
+        cur.execute(CREATE_FORECASTS_TABLE)
+        cur.execute(CREATE_IDX)
     conn.commit()
     print("[DB] Schema initialised")
 
@@ -152,6 +205,10 @@ def transform(location: dict) -> tuple[str, list[dict]]:
 
 INSERT_LOCATION = """
 INSERT OR IGNORE INTO locations (location_name) VALUES (?);
+""" if DB_BACKEND == "sqlite" else """
+INSERT INTO locations (location_name)
+VALUES (%s)
+ON CONFLICT (location_name) DO NOTHING;
 """
 
 INSERT_FORECAST = """
@@ -168,13 +225,42 @@ ON CONFLICT(location_name, forecast_start, forecast_end)
         max_temp   = excluded.max_temp,
         pop        = excluded.pop,
         fetched_at = datetime('now','localtime');
+""" if DB_BACKEND == "sqlite" else """
+INSERT INTO forecasts
+    (location_name, forecast_start, forecast_end,
+     weather, min_temp, max_temp, pop)
+VALUES
+    (%s, %s, %s, %s, %s, %s, %s)
+ON CONFLICT (location_name, forecast_start, forecast_end)
+    DO UPDATE SET
+        weather    = EXCLUDED.weather,
+        min_temp   = EXCLUDED.min_temp,
+        max_temp   = EXCLUDED.max_temp,
+        pop        = EXCLUDED.pop,
+        fetched_at = CURRENT_TIMESTAMP;
 """
 
 
-def load(conn: sqlite3.Connection, location_name: str, rows: list[dict]):
+def load(conn, location_name: str, rows: list[dict]):
     cur = conn.cursor()
-    cur.execute(INSERT_LOCATION, (location_name,))
-    cur.executemany(INSERT_FORECAST, rows)
+    if DB_BACKEND == "sqlite":
+        cur.execute(INSERT_LOCATION, (location_name,))
+        cur.executemany(INSERT_FORECAST, rows)
+    else:
+        cur.execute(INSERT_LOCATION, (location_name,))
+        for row in rows:
+            cur.execute(
+                INSERT_FORECAST,
+                (
+                    row["location_name"],
+                    row["forecast_start"],
+                    row["forecast_end"],
+                    row["weather"],
+                    row["min_temp"],
+                    row["max_temp"],
+                    row["pop"],
+                ),
+            )
     conn.commit()
 
 
@@ -243,7 +329,7 @@ def run_gate2():
     print("  GATE 2 — Database ETL")
     print("=" * 55)
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
 
     # Step 1 — Schema
     init_db(conn)

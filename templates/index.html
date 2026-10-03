@@ -327,6 +327,28 @@ const COORDS = {
 };
 
 // ── Helpers ──────────────────────────────────────────────
+async function fetchJson(url, options = {}) {
+  const res = await fetch(url, options);
+  const text = await res.text();
+
+  if (!text) {
+    throw new Error(`${url} returned empty response`);
+  }
+
+  try {
+    const data = JSON.parse(text);
+    if (!res.ok) {
+      throw new Error(data && data.message ? data.message : `${res.status} ${res.statusText}`);
+    }
+    return data;
+  } catch (err) {
+    if (!res.ok) {
+      throw new Error(`${url} => ${res.status} ${res.statusText}: ${text.slice(0, 180)}`);
+    }
+    throw new Error(`${url} returned non-JSON content: ${text.slice(0, 180)}`);
+  }
+}
+
 function weatherEmoji(w) {
   if (!w) return '🌤';
   if (w.includes('雷')) return '⛈';
@@ -378,8 +400,7 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 
 // ── Fetch Weather Data ───────────────────────────────────
 async function loadWeather() {
-  const res  = await fetch('/api/weather');
-  const list = await res.json();
+  const list = await fetchJson('/api/weather');
   weatherData = {};
   list.forEach(d => { weatherData[d.location_name] = d; });
   return weatherData;
@@ -388,12 +409,15 @@ async function loadWeather() {
 // ── GeoJSON Layer ────────────────────────────────────────
 async function loadGeoJSON() {
   const res = await fetch('/static/taiwan.geojson');
-  return await res.json();
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`geojson load failed: ${res.status} ${res.statusText}: ${text.slice(0, 180)}`);
+  }
+  return JSON.parse(text);
 }
 
 async function loadStations() {
-  const res = await fetch('/api/stations');
-  return await res.json();
+  return await fetchJson('/api/stations');
 }
 
 function buildGeoLayer(geo) {
@@ -612,13 +636,14 @@ document.getElementById('refresh-btn').addEventListener('click', async () => {
   icon.style.animation = 'spin 1s linear infinite';
 
   try {
-    const r = await fetch('/api/weather/refresh', { method: 'POST' });
-    const j = await r.json();
+    const j = await fetchJson('/api/weather/refresh', { method: 'POST' });
     if (j.status === 'ok') {
       await init(false);
     } else {
-      alert('Refresh error: ' + j.message);
+      alert('Refresh error: ' + (j.message || 'Unknown error'));
     }
+  } catch (error) {
+    alert('Refresh error: ' + error.message);
   } finally {
     btn.disabled = false;
     icon.style.animation = '';

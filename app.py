@@ -9,22 +9,94 @@ from flask import Flask, jsonify, render_template, send_from_directory
 from dotenv import load_dotenv
 import requests
 
+try:
+    import psycopg
+except ImportError:  # pragma: no cover
+    psycopg = None
+
 load_dotenv()
 
 app = Flask(__name__)
-DB_PATH = "weather.db"
+
+
+def resolve_db_path() -> str:
+    db_path = os.getenv("DB_PATH")
+    if db_path:
+        return db_path
+    if os.getenv("VERCEL"):
+        return "/tmp/weather.db"
+    return "weather.db"
+
+
+DB_PATH = resolve_db_path()
+DATABASE_URL = os.getenv("DATABASE_URL")
+DB_BACKEND = "postgres" if DATABASE_URL and psycopg is not None else "sqlite"
 CWA_API_KEY = os.getenv("CWA_API_KEY")
 STATION_API_URL = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/O-A0001-001"
 
+CREATE_FORECASTS_TABLE = """
+CREATE TABLE IF NOT EXISTS forecasts (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    location_name  TEXT    NOT NULL,
+    forecast_start TEXT    NOT NULL,
+    forecast_end   TEXT    NOT NULL,
+    weather        TEXT,
+    min_temp       INTEGER,
+    max_temp       INTEGER,
+    pop            INTEGER,
+    fetched_at     TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE(location_name, forecast_start, forecast_end)
+        ON CONFLICT REPLACE
+);
+"""
+
+
+def ensure_db_dir(db_path: str) -> str:
+    directory = os.path.dirname(db_path)
+    if directory and directory not in (".", ""):
+        os.makedirs(directory, exist_ok=True)
+    return db_path
+
+
+def get_db_connection():
+    if DB_BACKEND == "postgres":
+        return psycopg.connect(DATABASE_URL)
+    return sqlite3.connect(ensure_db_dir(DB_PATH))
+
+
+def ensure_db_schema():
+    conn = get_db_connection()
+    try:
+        if DB_BACKEND == "sqlite":
+            conn.execute("CREATE TABLE IF NOT EXISTS locations (id INTEGER PRIMARY KEY AUTOINCREMENT, location_name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')));")
+            conn.execute(CREATE_FORECASTS_TABLE)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_forecasts_location ON forecasts (location_name);")
+        else:
+            conn.execute("CREATE TABLE IF NOT EXISTS locations (id SERIAL PRIMARY KEY, location_name TEXT NOT NULL UNIQUE, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);")
+            conn.execute("CREATE TABLE IF NOT EXISTS forecasts (id SERIAL PRIMARY KEY, location_name TEXT NOT NULL, forecast_start TEXT NOT NULL, forecast_end TEXT NOT NULL, weather TEXT, min_temp INTEGER, max_temp INTEGER, pop INTEGER, fetched_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(location_name, forecast_start, forecast_end));")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_forecasts_location ON forecasts (location_name);")
+        conn.commit()
+    finally:
+        conn.close()
+
 
 def query_db(sql: str, params=()) -> list[dict]:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-    cur.execute(sql, params)
-    rows = [dict(r) for r in cur.fetchall()]
-    conn.close()
-    return rows
+    ensure_db_schema()
+    conn = get_db_connection()
+    try:
+        if DB_BACKEND == "sqlite":
+            conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        if DB_BACKEND == "sqlite":
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+            return [dict(r) for r in rows]
+        cur.execute(sql, params)
+        columns = [desc[0] for desc in cur.description]
+        rows = cur.fetchall()
+        return [dict(zip(columns, row)) for row in rows]
+    finally:
+        conn.close()
 
 
 # ── Routes ────────────────────────────────────────────────
@@ -157,6 +229,8 @@ def api_stations():
 def static_files(filename):
     return send_from_directory("static", filename)
 
+
+ensure_db_schema()
 
 if __name__ == "__main__":
     print("[APP] Starting Taiwan Weather GIS on http://localhost:5000")

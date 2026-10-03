@@ -10,7 +10,7 @@
 
 ## Live Demo
 
-🌐 網站連結：<https://your-domain.com/>
+🌐 網站連結：<http://127.0.0.1:5000/>
 
 <p align="center">
   <img src="static/preview.png" alt="Taiwan Weather GIS Preview" width="1000" />
