@@ -10,7 +10,7 @@
 
 ## Live Demo
 
-🌐 網站連結：<https://taiwan-weather-map.vercel.app/>
+🌐 網站連結：<https://your-domain.com/>
 
 <p align="center">
   <img src="static/preview.png" alt="Taiwan Weather GIS Preview" width="1000" />
